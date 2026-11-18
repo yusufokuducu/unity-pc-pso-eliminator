@@ -36,11 +36,32 @@ namespace YusufOkuducu.PcPsoEliminator.Editor
                 Directory.CreateDirectory(logDir);
 
             string mdPath = Path.Combine(logDir, "PsoWarmupManifestReport.md");
+            string jsonPath = Path.Combine(logDir, "PsoWarmupMcpReport.json");
             File.WriteAllText(mdPath, manifest.ExportManifestReportToMarkdown(), Encoding.UTF8);
+            File.WriteAllText(jsonPath, PsoEliminatorMcpBridge.ExportManifestMcpReportToJson(manifest), Encoding.UTF8);
 
             Debug.Log(
                 $"[PcPsoEliminator CI] Harvested {manifest.harvestedRecords.Count} PSO variants across " +
                 $"{manifest.uniqueShaderCount} shaders and {manifest.uniqueMaterialCount} materials. Report saved to {mdPath}");
+        }
+
+        /// <summary>
+        /// MCP / AI Agent batchmode entrypoint outputting structured JSON PSO manifest & PassType heatmap diagnostics:
+        /// unity -batchmode -quit -projectPath . -executeMethod YusufOkuducu.PcPsoEliminator.Editor.SceneShaderVariantHarvester.RunMcpAuditJson
+        /// </summary>
+        public static string RunMcpAuditJson()
+        {
+            PsoWarmupManifest manifest = HarvestProjectMaterialsToManifest();
+            string json = PsoEliminatorMcpBridge.ExportManifestMcpReportToJson(manifest);
+
+            string logDir = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
+            if (!Directory.Exists(logDir))
+                Directory.CreateDirectory(logDir);
+
+            string jsonPath = Path.Combine(logDir, "PsoWarmupMcpReport.json");
+            File.WriteAllText(jsonPath, json, Encoding.UTF8);
+            Debug.Log($"[PcPsoEliminator MCP] Exported structured JSON PSO manifest report to {jsonPath}");
+            return json;
         }
 
         public static PsoWarmupManifest HarvestProjectMaterialsToManifest(

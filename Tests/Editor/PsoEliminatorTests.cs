@@ -1,6 +1,7 @@
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.Rendering;
+using YusufOkuducu.PcPsoEliminator.Editor;
 
 namespace YusufOkuducu.PcPsoEliminator.Tests
 {
@@ -165,6 +166,153 @@ namespace YusufOkuducu.PcPsoEliminator.Tests
             {
                 Object.DestroyImmediate(manifest);
                 Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void McpBridge_AutoFixAndOptimizeManifest_DeduplicatesVariantsPrunesInvalidMaterialsAndSanitizesMsaa()
+        {
+            var manifest = ScriptableObject.CreateInstance<PsoWarmupManifest>();
+            try
+            {
+                manifest.msaaSampleCounts.Clear();
+                manifest.msaaSampleCounts.AddRange(new[] { 0, 3, 4, 4 }); // Invalid/duplicate MSAA values
+
+                manifest.hardwareDrawWarmupMaterials.Add(null);
+                manifest.hardwareDrawWarmupMaterials.Add(new Material
+                {
+                    name = "UnsupportedMat",
+                    shader = new Shader { name = "Custom/Broken", isSupported = false }
+                });
+                manifest.hardwareDrawWarmupMaterials.Add(new Material
+                {
+                    name = "ValidMat",
+                    shader = new Shader { name = "Universal Render Pipeline/Lit", isSupported = true }
+                });
+
+                manifest.harvestedRecords.Add(new HarvestedVariantRecord
+                {
+                    shaderName = "Universal Render Pipeline/Lit",
+                    passType = PassType.ScriptableRenderPipeline,
+                    keywords = new[] { "_B", "_A" }
+                });
+                manifest.harvestedRecords.Add(new HarvestedVariantRecord
+                {
+                    shaderName = "Universal Render Pipeline/Lit",
+                    passType = PassType.ScriptableRenderPipeline,
+                    keywords = new[] { "_A", "_B" }
+                });
+
+                PsoManifestAutoFixReport fix = PsoEliminatorMcpBridge.AutoFixAndOptimizeManifest(manifest);
+
+                Assert.IsTrue(fix.modified);
+                Assert.AreEqual(1, fix.duplicateVariantsRemoved);
+                Assert.AreEqual(2, fix.invalidMaterialsRemoved);
+                Assert.Greater(fix.msaaEntriesNormalized, 0);
+                Assert.AreEqual(1, manifest.harvestedRecords.Count);
+                Assert.AreEqual(1, manifest.hardwareDrawWarmupMaterials.Count);
+                CollectionAssert.AreEqual(new[] { 1, 2, 4 }, manifest.msaaSampleCounts);
+            }
+            finally
+            {
+                Object.DestroyImmediate(manifest);
+            }
+        }
+
+        [Test]
+        public void McpBridge_HandlesJsonRpcInitializeToolsListToolsCallAndErrors()
+        {
+            var manifest = ScriptableObject.CreateInstance<PsoWarmupManifest>();
+            try
+            {
+                manifest.harvestedRecords.Add(new HarvestedVariantRecord
+                {
+                    shaderName = "Universal Render Pipeline/Lit",
+                    passType = PassType.ShadowCaster,
+                    keywords = new[] { "_SHADOWS_SOFT" }
+                });
+                manifest.harvestedRecords.Add(new HarvestedVariantRecord
+                {
+                    shaderName = "Universal Render Pipeline/Lit",
+                    passType = PassType.ShadowCaster,
+                    keywords = new[] { "_SHADOWS_SOFT" }
+                });
+
+                string initRes = PsoEliminatorMcpBridge.HandleJsonRpcRequest(
+                    @"{""jsonrpc"":""2.0"",""id"":1,""method"":""initialize""}", manifest);
+                StringAssert.Contains(@"""protocolVersion"":""2024-11-05""", initRes);
+                StringAssert.Contains(@"""name"":""unity-pc-pso-eliminator""", initRes);
+
+                string listRes = PsoEliminatorMcpBridge.HandleJsonRpcRequest(
+                    @"{""jsonrpc"":""2.0"",""id"":2,""method"":""tools/list""}", manifest);
+                StringAssert.Contains("pso_eliminator.inspect_manifest", listRes);
+                StringAssert.Contains("pso_eliminator.autofix_manifest", listRes);
+
+                string callFix = PsoEliminatorMcpBridge.HandleJsonRpcRequest(
+                    @"{""jsonrpc"":""2.0"",""id"":3,""method"":""tools/call"",""params"":{""name"":""pso_eliminator.autofix_manifest""}}",
+                    manifest);
+                StringAssert.Contains(@"""duplicateVariantsRemoved"":1", callFix);
+                StringAssert.Contains(@"""isError"":false", callFix);
+
+                string callInspect = PsoEliminatorMcpBridge.HandleJsonRpcRequest(
+                    @"{""jsonrpc"":""2.0"",""id"":4,""method"":""tools/call"",""params"":{""name"":""pso_eliminator.inspect_manifest""}}",
+                    manifest);
+                StringAssert.Contains(@"""totalVariants"":1", callInspect);
+                StringAssert.Contains(@"""shadowCasterPassCount"":1", callInspect);
+
+                string errUnknown = PsoEliminatorMcpBridge.HandleJsonRpcRequest(
+                    @"{""jsonrpc"":""2.0"",""id"":99,""method"":""bad/method""}", manifest);
+                StringAssert.Contains("-32601", errUnknown);
+            }
+            finally
+            {
+                Object.DestroyImmediate(manifest);
+            }
+        }
+
+        [Test]
+        public void UiToolkitWindow_BuildsPassTypeHeatmapAndFiltersRecordsBySearchAndPass()
+        {
+            var manifest = ScriptableObject.CreateInstance<PsoWarmupManifest>();
+            try
+            {
+                manifest.harvestedRecords.Add(new HarvestedVariantRecord
+                {
+                    shaderName = "Universal Render Pipeline/Lit",
+                    passType = PassType.ScriptableRenderPipeline,
+                    keywords = new[] { "_NORMALMAP" }
+                });
+                manifest.harvestedRecords.Add(new HarvestedVariantRecord
+                {
+                    shaderName = "Custom/FoliageWind",
+                    passType = PassType.ShadowCaster,
+                    keywords = new[] { "_ALPHATEST_ON" }
+                });
+
+                var win = new PsoEliminatorWindow();
+                win.CreateGUI();
+                Assert.Greater(win.rootVisualElement.childCount, 0);
+
+                win.SetActiveManifest(manifest);
+                Assert.AreEqual(2, win.GetFilteredRecords().Count);
+
+                PsoManifestHeatmapSummary heatmap = PsoEliminatorMcpBridge.ComputeManifestHeatmap(manifest);
+                Assert.AreEqual(2, heatmap.totalVariants);
+                Assert.AreEqual(1, heatmap.srpPassCount);
+                Assert.AreEqual(1, heatmap.shadowCasterPassCount);
+
+                win.SetPassTypeFilter(PassType.ShadowCaster);
+                Assert.AreEqual(1, win.GetFilteredRecords().Count);
+                Assert.AreEqual("Custom/FoliageWind", win.GetFilteredRecords()[0].shaderName);
+
+                win.SetPassTypeFilter(null);
+                win.SetSearchFilter("_NORMALMAP");
+                Assert.AreEqual(1, win.GetFilteredRecords().Count);
+                Assert.AreEqual("Universal Render Pipeline/Lit", win.GetFilteredRecords()[0].shaderName);
+            }
+            finally
+            {
+                Object.DestroyImmediate(manifest);
             }
         }
     }

@@ -1,10 +1,13 @@
 {
   "name": "com.yusufokuducu.pc-pso-eliminator",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "displayName": "PC DX12/Vulkan PSO Stutter Eliminator & Async Shader Warmup",
-  "description": "Eliminates DirectX 12 and Vulkan Pipeline State Object (PSO) compilation micro-stutters on PC via scene/prefab variant harvesting, frame-budgeted progressive warmup, offscreen command-buffer PSO draw binding, and runtime hitch detection.",
+  "description": "Eliminates DirectX 12 and Vulkan Pipeline State Object (PSO) compilation micro-stutters on PC via scene/prefab variant harvesting, frame-budgeted progressive warmup, offscreen command-buffer PSO draw binding, UI Toolkit PassType heatmap, and MCP / AI Agent manifest optimizer.",
   "unity": "2022.3",
   "unityRelease": "0f1",
+  "documentationUrl": "https://github.com/yusufokuducu/unity-pc-pso-eliminator#readme",
+  "changelogUrl": "https://github.com/yusufokuducu/unity-pc-pso-eliminator/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/yusufokuducu/unity-pc-pso-eliminator/blob/main/LICENSE",
   "keywords": [
     "pc",
     "dx12",
@@ -14,6 +17,8 @@
     "stutter",
     "urp",
     "hdrp",
+    "mcp",
+    "ui-toolkit",
     "performance"
   ],
   "author": {
