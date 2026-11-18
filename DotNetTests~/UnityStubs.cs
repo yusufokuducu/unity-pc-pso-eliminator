@@ -66,9 +66,16 @@ namespace UnityEngine
 
     public sealed class RenderTexture : Object
     {
+        public int antiAliasing { get; set; } = 1;
         public RenderTexture(int width, int height, int depth, GraphicsFormat format) { }
         public bool Create() => true;
         public void Release() { }
+    }
+
+    public struct BoneWeight
+    {
+        public int boneIndex0, boneIndex1, boneIndex2, boneIndex3;
+        public float weight0, weight1, weight2, weight3;
     }
 
     public sealed class Mesh : Object
@@ -77,6 +84,10 @@ namespace UnityEngine
         public Vector3[] normals { get; set; }
         public Vector4[] tangents { get; set; }
         public Vector2[] uv { get; set; }
+        public Vector2[] uv2 { get; set; }
+        public Color[] colors { get; set; }
+        public BoneWeight[] boneWeights { get; set; }
+        public Matrix4x4[] bindposes { get; set; }
         public int[] triangles { get; set; }
     }
 

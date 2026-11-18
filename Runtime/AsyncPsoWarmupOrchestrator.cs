@@ -40,6 +40,7 @@ namespace YusufOkuducu.PcPsoEliminator
         private readonly List<PsoHitchEvent> _detectedHitches = new List<PsoHitchEvent>();
         private readonly List<RenderTexture> _dummyRenderTargets = new List<RenderTexture>();
         private Mesh _dummyQuadMesh;
+        private Mesh _dummySkinnedMesh;
         private CommandBuffer _warmupCmd;
         private int _currentMaterialIndex;
         private bool _isWarmingUp;
@@ -51,6 +52,7 @@ namespace YusufOkuducu.PcPsoEliminator
         public bool IsCompleted => _isCompleted;
         public IReadOnlyList<PsoHitchEvent> DetectedHitches => _detectedHitches;
         public float RollingFrameAverageMs => _rollingFrameMs;
+        public int ActiveDummyRenderTargetCount => _dummyRenderTargets.Count;
 
         public float ProgressNormalized
         {
@@ -169,6 +171,10 @@ namespace YusufOkuducu.PcPsoEliminator
                             for (int p = 0; p < passCount; p++)
                             {
                                 _warmupCmd.DrawMesh(_dummyQuadMesh, Matrix4x4.identity, mat, 0, p);
+                                if (_dummySkinnedMesh != null)
+                                {
+                                    _warmupCmd.DrawMesh(_dummySkinnedMesh, Matrix4x4.identity, mat, 0, p);
+                                }
                             }
                         }
                     }
@@ -240,16 +246,31 @@ namespace YusufOkuducu.PcPsoEliminator
                     ? manifest.renderTargetProfiles
                     : new List<PsoRenderTargetProfile> { PsoRenderTargetProfile.SdrR8G8B8A8_UNorm };
 
+                List<int> msaaCounts = (manifest != null && manifest.msaaSampleCounts != null && manifest.msaaSampleCounts.Count > 0)
+                    ? manifest.msaaSampleCounts
+                    : new List<int> { 1 };
+
+                var createdCombos = new HashSet<int>();
+
                 for (int i = 0; i < profiles.Count; i++)
                 {
                     GraphicsFormat fmt = MapProfileToGraphicsFormat(profiles[i]);
-                    var rt = new RenderTexture(4, 4, 24, fmt)
+                    for (int m = 0; m < msaaCounts.Count; m++)
                     {
-                        name = $"PSO_Warmup_DummyRT_{profiles[i]}",
-                        hideFlags = HideFlags.HideAndDontSave
-                    };
-                    rt.Create();
-                    _dummyRenderTargets.Add(rt);
+                        int validMsaa = SanitizeMsaaSampleCount(msaaCounts[m]);
+                        int comboKey = ((int)profiles[i] << 8) | validMsaa;
+                        if (!createdCombos.Add(comboKey))
+                            continue;
+
+                        var rt = new RenderTexture(4, 4, 24, fmt)
+                        {
+                            name = $"PSO_Warmup_DummyRT_{profiles[i]}_MSAA{validMsaa}x",
+                            antiAliasing = validMsaa,
+                            hideFlags = HideFlags.HideAndDontSave
+                        };
+                        rt.Create();
+                        _dummyRenderTargets.Add(rt);
+                    }
                 }
             }
 
@@ -257,12 +278,33 @@ namespace YusufOkuducu.PcPsoEliminator
             {
                 _dummyQuadMesh = new Mesh
                 {
-                    name = "PSO_Warmup_DummyTriangle",
+                    name = "PSO_Warmup_DummyStaticTriangle",
                     hideFlags = HideFlags.HideAndDontSave,
                     vertices = new[] { Vector3.zero, Vector3.up * 0.01f, Vector3.right * 0.01f },
                     normals = new[] { Vector3.back, Vector3.back, Vector3.back },
                     tangents = new[] { new Vector4(1, 0, 0, 1), new Vector4(1, 0, 0, 1), new Vector4(1, 0, 0, 1) },
                     uv = new[] { Vector2.zero, Vector2.up, Vector2.right },
+                    uv2 = new[] { Vector2.zero, Vector2.up, Vector2.right },
+                    colors = new[] { Color.black, Color.black, Color.black },
+                    triangles = new[] { 0, 1, 2 }
+                };
+            }
+
+            if (_dummySkinnedMesh == null)
+            {
+                var bw = new BoneWeight { boneIndex0 = 0, weight0 = 1f };
+                _dummySkinnedMesh = new Mesh
+                {
+                    name = "PSO_Warmup_DummySkinnedTriangle",
+                    hideFlags = HideFlags.HideAndDontSave,
+                    vertices = new[] { Vector3.zero, Vector3.up * 0.01f, Vector3.right * 0.01f },
+                    normals = new[] { Vector3.back, Vector3.back, Vector3.back },
+                    tangents = new[] { new Vector4(1, 0, 0, 1), new Vector4(1, 0, 0, 1), new Vector4(1, 0, 0, 1) },
+                    uv = new[] { Vector2.zero, Vector2.up, Vector2.right },
+                    uv2 = new[] { Vector2.zero, Vector2.up, Vector2.right },
+                    colors = new[] { Color.black, Color.black, Color.black },
+                    boneWeights = new[] { bw, bw, bw },
+                    bindposes = new[] { Matrix4x4.identity },
                     triangles = new[] { 0, 1, 2 }
                 };
             }
@@ -271,6 +313,14 @@ namespace YusufOkuducu.PcPsoEliminator
             {
                 _warmupCmd = new CommandBuffer { name = "AsyncPsoWarmupPass" };
             }
+        }
+
+        public static int SanitizeMsaaSampleCount(int samples)
+        {
+            if (samples >= 8) return 8;
+            if (samples >= 4) return 4;
+            if (samples >= 2) return 2;
+            return 1;
         }
 
         private static GraphicsFormat MapProfileToGraphicsFormat(PsoRenderTargetProfile profile)
@@ -308,6 +358,12 @@ namespace YusufOkuducu.PcPsoEliminator
             {
                 DestroyImmediate(_dummyQuadMesh);
                 _dummyQuadMesh = null;
+            }
+
+            if (_dummySkinnedMesh != null)
+            {
+                DestroyImmediate(_dummySkinnedMesh);
+                _dummySkinnedMesh = null;
             }
         }
 

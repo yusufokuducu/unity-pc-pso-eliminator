@@ -21,22 +21,41 @@ namespace YusufOkuducu.PcPsoEliminator
         public string[] keywords;
         public string sourceAssetPath;
 
-        public string GetCanonicalKey()
+        public static string[] NormalizeKeywords(string[] rawKeywords)
         {
-            string sName = shaderName ?? string.Empty;
-            if (keywords == null || keywords.Length == 0)
-                return $"{sName}|{passType}|";
+            if (rawKeywords == null || rawKeywords.Length == 0)
+                return Array.Empty<string>();
 
-            var copy = new string[keywords.Length];
-            int validCount = 0;
-            for (int i = 0; i < keywords.Length; i++)
+            var unique = new List<string>(rawKeywords.Length);
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < rawKeywords.Length; i++)
             {
-                if (!string.IsNullOrWhiteSpace(keywords[i]))
-                    copy[validCount++] = keywords[i].Trim();
+                string kw = rawKeywords[i];
+                if (string.IsNullOrWhiteSpace(kw))
+                    continue;
+
+                string trimmed = kw.Trim();
+                if (seen.Add(trimmed))
+                {
+                    unique.Add(trimmed);
+                }
             }
 
-            Array.Sort(copy, 0, validCount, StringComparer.Ordinal);
-            string joined = validCount > 0 ? string.Join(";", copy, 0, validCount) : string.Empty;
+            if (unique.Count == 0)
+                return Array.Empty<string>();
+
+            unique.Sort(StringComparer.Ordinal);
+            return unique.ToArray();
+        }
+
+        public string GetCanonicalKey()
+        {
+            string sName = (shaderName ?? string.Empty).Trim();
+            string[] normalized = NormalizeKeywords(keywords);
+            if (normalized.Length == 0)
+                return $"{sName}|{passType}|";
+
+            string joined = string.Join(";", normalized);
             return $"{sName}|{passType}|{joined}";
         }
     }
@@ -82,10 +101,8 @@ namespace YusufOkuducu.PcPsoEliminator
                 if (string.IsNullOrWhiteSpace(rec.shaderName))
                     continue;
 
-                if (rec.keywords != null && rec.keywords.Length > 1)
-                {
-                    Array.Sort(rec.keywords, StringComparer.Ordinal);
-                }
+                rec.shaderName = rec.shaderName.Trim();
+                rec.keywords = HarvestedVariantRecord.NormalizeKeywords(rec.keywords);
 
                 string key = rec.GetCanonicalKey();
                 if (seen.Add(key))
@@ -98,7 +115,9 @@ namespace YusufOkuducu.PcPsoEliminator
             {
                 int cmp = string.CompareOrdinal(a.shaderName, b.shaderName);
                 if (cmp != 0) return cmp;
-                return a.passType.CompareTo(b.passType);
+                int passCmp = a.passType.CompareTo(b.passType);
+                if (passCmp != 0) return passCmp;
+                return string.CompareOrdinal(a.GetCanonicalKey(), b.GetCanonicalKey());
             });
 
             harvestedRecords = cleanList;
@@ -107,8 +126,8 @@ namespace YusufOkuducu.PcPsoEliminator
 
         /// <summary>
         /// Computes a deterministic 64-bit FNV-1a hex fingerprint combining the current PC GPU driver
-        /// identity and all harvested PSO variant records. Used to detect driver updates that invalidate
-        /// DX12/Vulkan driver shader caches.
+        /// identity, RenderTarget format/MSAA profiles, and all harvested PSO variant records.
+        /// Used to detect driver updates or manifest changes that invalidate DX12/Vulkan PSO caches.
         /// </summary>
         public string ComputeDriverAndManifestFingerprint(
             string gpuDeviceName,
@@ -121,6 +140,26 @@ namespace YusufOkuducu.PcPsoEliminator
             hash = Fnv1aAppend(hash, gpuDriverVersion ?? string.Empty);
             hash = Fnv1aAppend(hash, "|");
             hash = Fnv1aAppend(hash, graphicsApi ?? string.Empty);
+            hash = Fnv1aAppend(hash, "|RT:");
+
+            if (renderTargetProfiles != null)
+            {
+                for (int i = 0; i < renderTargetProfiles.Count; i++)
+                {
+                    hash = Fnv1aAppend(hash, renderTargetProfiles[i].ToString());
+                    hash = Fnv1aAppend(hash, ",");
+                }
+            }
+
+            hash = Fnv1aAppend(hash, "|MSAA:");
+            if (msaaSampleCounts != null)
+            {
+                for (int i = 0; i < msaaSampleCounts.Count; i++)
+                {
+                    hash = Fnv1aAppend(hash, msaaSampleCounts[i].ToString());
+                    hash = Fnv1aAppend(hash, ",");
+                }
+            }
             hash = Fnv1aAppend(hash, "|");
 
             if (harvestedRecords != null)
