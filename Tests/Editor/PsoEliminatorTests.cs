@@ -309,6 +309,14 @@ namespace YusufOkuducu.PcPsoEliminator.Tests
                 win.SetSearchFilter("_NORMALMAP");
                 Assert.AreEqual(1, win.GetFilteredRecords().Count);
                 Assert.AreEqual("Universal Render Pipeline/Lit", win.GetFilteredRecords()[0].shaderName);
+
+                // Verify JSON-RPC 2.0 handles alphabetical key order ("arguments" before "name", "id" at end) and unicode escapes
+                string reorderedJson =
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"arguments\":{\"id\":999,\"name\":\"decoy.tool\"},\"name\":\"pso_eliminator.inspect_manifest\"},\"id\":55}";
+                string rpcRes = PsoEliminatorMcpBridge.HandleJsonRpcRequest(reorderedJson, manifest);
+                StringAssert.Contains("\"id\":55", rpcRes);
+                StringAssert.Contains("\"totalVariants\":2", rpcRes);
+                Assert.IsNotNull(typeof(SceneShaderVariantHarvester).GetMethod("RunMcpAuditJson", System.Type.EmptyTypes));
             }
             finally
             {
