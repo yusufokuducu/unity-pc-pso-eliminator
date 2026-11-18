@@ -1,3 +1,5 @@
+using System.IO;
+using System.Text;
 using UnityEditor;
 using UnityEngine;
 
@@ -12,7 +14,7 @@ namespace YusufOkuducu.PcPsoEliminator.Editor
         public static void ShowWindow()
         {
             var win = GetWindow<PsoEliminatorWindow>("PC PSO Eliminator");
-            win.minSize = new Vector2(620f, 440f);
+            win.minSize = new Vector2(640f, 460f);
             win.Show();
         }
 
@@ -30,7 +32,7 @@ namespace YusufOkuducu.PcPsoEliminator.Editor
             EditorGUILayout.Space(6f);
             EditorGUILayout.LabelField("PC DX12 / Vulkan PSO Stutter Eliminator & Async Prewarmer", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Harvests active Material + Shader + PassType + Keyword combinations across your project into a lean ShaderVariantCollection & PsoWarmupManifest, and orchestrates frame-budgeted progressive PSO compilation + offscreen CommandBuffer draw binding.",
+                "Harvests active Material + Shader + PassType + Keyword combinations across your project into a lean ShaderVariantCollection & PsoWarmupManifest, and orchestrates frame-budgeted progressive PSO compilation + multi-format offscreen CommandBuffer draw binding.",
                 MessageType.Info);
 
             _activeManifest = (PsoWarmupManifest)EditorGUILayout.ObjectField(
@@ -50,6 +52,11 @@ namespace YusufOkuducu.PcPsoEliminator.Editor
             {
                 AddOrchestratorToScene();
             }
+
+            if (GUILayout.Button("Export Markdown Report", GUILayout.Height(30f)))
+            {
+                ExportMarkdownReport();
+            }
             EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.Space(8f);
@@ -58,10 +65,15 @@ namespace YusufOkuducu.PcPsoEliminator.Editor
                 EditorGUILayout.BeginVertical(EditorStyles.helpBox);
                 EditorGUILayout.LabelField("Manifest Summary", EditorStyles.boldLabel);
                 EditorGUILayout.LabelField($"Last Harvest (UTC): {_activeManifest.lastHarvestTimestampUtc}");
+                string fingerprint = _activeManifest.ComputeDriverAndManifestFingerprint(
+                    SystemInfo.graphicsDeviceName,
+                    SystemInfo.graphicsDeviceVersion,
+                    SystemInfo.graphicsDeviceType.ToString());
                 EditorGUILayout.LabelField(
                     $"Unique Shaders: {_activeManifest.uniqueShaderCount} | " +
                     $"Materials Bound: {_activeManifest.uniqueMaterialCount} | " +
-                    $"Harvested PSO Variants: {_activeManifest.harvestedRecords.Count}");
+                    $"Harvested PSO Variants: {_activeManifest.harvestedRecords.Count} | " +
+                    $"Driver Fingerprint: {fingerprint}");
 
                 _scroll = EditorGUILayout.BeginScrollView(_scroll);
                 int previewCount = Mathf.Min(100, _activeManifest.harvestedRecords.Count);
@@ -80,7 +92,18 @@ namespace YusufOkuducu.PcPsoEliminator.Editor
             }
         }
 
-        private void AddOrchestratorToScene()
+        private void ExportMarkdownReport()
+        {
+            if (_activeManifest == null) return;
+            string path = EditorUtility.SaveFilePanel("Export PSO Warmup Manifest Report", "", "PsoWarmupManifestReport.md", "md");
+            if (!string.IsNullOrEmpty(path))
+            {
+                File.WriteAllText(path, _activeManifest.ExportManifestReportToMarkdown(), Encoding.UTF8);
+                EditorUtility.RevealInFinder(path);
+            }
+        }
+
+        private static void AddOrchestratorToScene()
         {
             var existing = FindFirstObjectByType<AsyncPsoWarmupOrchestrator>();
             if (existing != null)

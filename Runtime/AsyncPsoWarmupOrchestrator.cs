@@ -19,7 +19,7 @@ namespace YusufOkuducu.PcPsoEliminator
 
     /// <summary>
     /// Frame-budgeted DX12/Vulkan PSO prewarmer and runtime compilation hitch detector.
-    /// Combines progressive ShaderVariantCollection warmup with actual offscreen CommandBuffer
+    /// Combines progressive ShaderVariantCollection warmup with multi-format offscreen CommandBuffer
     /// draw-state binding so modern desktop GPU drivers compile full hardware PSOs before gameplay.
     /// </summary>
     [DisallowMultipleComponent]
@@ -35,19 +35,22 @@ namespace YusufOkuducu.PcPsoEliminator
         [Header("Runtime Hitch Detection")]
         [SerializeField] private bool monitorRuntimeHitches = true;
         [SerializeField] [Range(1.8f, 5.0f)] private float hitchSpikeThresholdMultiplier = 2.5f;
+        [SerializeField] private float minimumHitchDurationMs = 22.0f;
 
         private readonly List<PsoHitchEvent> _detectedHitches = new List<PsoHitchEvent>();
-        private RenderTexture _dummyColorRt;
+        private readonly List<RenderTexture> _dummyRenderTargets = new List<RenderTexture>();
         private Mesh _dummyQuadMesh;
         private CommandBuffer _warmupCmd;
         private int _currentMaterialIndex;
         private bool _isWarmingUp;
         private bool _isCompleted;
-        private float _rollingFrameMs = 8.33f;
+        private float _rollingFrameMs;
+        private int _baselineFramesObserved;
 
         public bool IsWarmingUp => _isWarmingUp;
         public bool IsCompleted => _isCompleted;
         public IReadOnlyList<PsoHitchEvent> DetectedHitches => _detectedHitches;
+        public float RollingFrameAverageMs => _rollingFrameMs;
 
         public float ProgressNormalized
         {
@@ -84,6 +87,7 @@ namespace YusufOkuducu.PcPsoEliminator
             if (manifest == null)
             {
                 _isCompleted = true;
+                _isWarmingUp = false;
                 return;
             }
 
@@ -91,6 +95,13 @@ namespace YusufOkuducu.PcPsoEliminator
             _currentMaterialIndex = 0;
             _isCompleted = false;
             _isWarmingUp = true;
+        }
+
+        public void ResetHitchDetector()
+        {
+            _detectedHitches.Clear();
+            _rollingFrameMs = 0f;
+            _baselineFramesObserved = 0;
         }
 
         private void Update()
@@ -113,7 +124,7 @@ namespace YusufOkuducu.PcPsoEliminator
                 return;
             }
 
-            long budgetTicks = (long)(frameBudgetMilliseconds * (Stopwatch.Frequency / 1000.0));
+            long budgetTicks = (long)(Mathf.Max(0.25f, frameBudgetMilliseconds) * (Stopwatch.Frequency / 1000.0));
             long startTicks = Stopwatch.GetTimestamp();
 
             // Stage 1: Progressive ShaderVariantCollection warmup
@@ -122,7 +133,7 @@ namespace YusufOkuducu.PcPsoEliminator
             {
                 while (!svc.isWarmedUp && (Stopwatch.GetTimestamp() - startTicks) < budgetTicks)
                 {
-                    if ( svc.WarmUpProgressively(Mathf.Max(1, variantsPerStep)))
+                    if (svc.WarmUpProgressively(Mathf.Max(1, variantsPerStep)))
                         break;
                 }
 
@@ -130,14 +141,21 @@ namespace YusufOkuducu.PcPsoEliminator
                 return;
             }
 
-            // Stage 2: Hardware PSO Draw-State Binding via offscreen 1x1 CommandBuffer
+            // Stage 2: Hardware PSO Draw-State Binding via offscreen RenderTargets (SDR & HDR formats)
             List<Material> mats = manifest.hardwareDrawWarmupMaterials;
             if (mats != null && _currentMaterialIndex < mats.Count)
             {
                 EnsureOffscreenResources();
                 _warmupCmd.Clear();
-                _warmupCmd.SetRenderTarget(_dummyColorRt);
-                _warmupCmd.ClearRenderTarget(true, true, Color.black);
+
+                for (int rtIdx = 0; rtIdx < _dummyRenderTargets.Count; rtIdx++)
+                {
+                    RenderTexture targetRt = _dummyRenderTargets[rtIdx];
+                    if (targetRt == null) continue;
+
+                    _warmupCmd.SetRenderTarget(targetRt);
+                    _warmupCmd.ClearRenderTarget(true, true, Color.black);
+                }
 
                 while (_currentMaterialIndex < mats.Count && (Stopwatch.GetTimestamp() - startTicks) < budgetTicks)
                 {
@@ -145,9 +163,13 @@ namespace YusufOkuducu.PcPsoEliminator
                     if (mat != null && mat.shader != null && mat.shader.isSupported)
                     {
                         int passCount = Mathf.Min(mat.passCount, 4);
-                        for (int p = 0; p < passCount; p++)
+                        for (int rtIdx = 0; rtIdx < _dummyRenderTargets.Count; rtIdx++)
                         {
-                            _warmupCmd.DrawMesh(_dummyQuadMesh, Matrix4x4.identity, mat, 0, p);
+                            _warmupCmd.SetRenderTarget(_dummyRenderTargets[rtIdx]);
+                            for (int p = 0; p < passCount; p++)
+                            {
+                                _warmupCmd.DrawMesh(_dummyQuadMesh, Matrix4x4.identity, mat, 0, p);
+                            }
                         }
                     }
                 }
@@ -167,9 +189,20 @@ namespace YusufOkuducu.PcPsoEliminator
 
         public bool DetectRuntimePsoHitch(float currentFrameMs, int frameIndex)
         {
-            if (currentFrameMs <= 0.01f) return false;
+            if (float.IsNaN(currentFrameMs) || float.IsInfinity(currentFrameMs) || currentFrameMs <= 0.01f)
+                return false;
 
-            bool isHitch = currentFrameMs > (_rollingFrameMs * hitchSpikeThresholdMultiplier) && currentFrameMs > 22.0f;
+            if (_baselineFramesObserved == 0)
+            {
+                _rollingFrameMs = currentFrameMs;
+                _baselineFramesObserved = 1;
+                return false;
+            }
+
+            bool isHitch = _baselineFramesObserved >= 5 &&
+                           currentFrameMs > (_rollingFrameMs * hitchSpikeThresholdMultiplier) &&
+                           currentFrameMs > minimumHitchDurationMs;
+
             if (isHitch)
             {
                 var evt = new PsoHitchEvent
@@ -184,7 +217,8 @@ namespace YusufOkuducu.PcPsoEliminator
                 OnHitchDetected?.Invoke(evt);
             }
 
-            // Exponential moving average with slow adaptation to spikes
+            _baselineFramesObserved++;
+            // Exponential moving average with clamped adaptation to spikes so a single hitch doesn't skew baseline
             _rollingFrameMs = Mathf.Lerp(_rollingFrameMs, Mathf.Min(currentFrameMs, _rollingFrameMs * 1.5f), 0.08f);
             return isHitch;
         }
@@ -200,14 +234,23 @@ namespace YusufOkuducu.PcPsoEliminator
 
         private void EnsureOffscreenResources()
         {
-            if (_dummyColorRt == null)
+            if (_dummyRenderTargets.Count == 0)
             {
-                _dummyColorRt = new RenderTexture(4, 4, 24, GraphicsFormat.R8G8B8A8_UNorm)
+                List<PsoRenderTargetProfile> profiles = (manifest != null && manifest.renderTargetProfiles != null && manifest.renderTargetProfiles.Count > 0)
+                    ? manifest.renderTargetProfiles
+                    : new List<PsoRenderTargetProfile> { PsoRenderTargetProfile.SdrR8G8B8A8_UNorm };
+
+                for (int i = 0; i < profiles.Count; i++)
                 {
-                    name = "PSO_Warmup_DummyRT",
-                    hideFlags = HideFlags.HideAndDontSave
-                };
-                _dummyColorRt.Create();
+                    GraphicsFormat fmt = MapProfileToGraphicsFormat(profiles[i]);
+                    var rt = new RenderTexture(4, 4, 24, fmt)
+                    {
+                        name = $"PSO_Warmup_DummyRT_{profiles[i]}",
+                        hideFlags = HideFlags.HideAndDontSave
+                    };
+                    rt.Create();
+                    _dummyRenderTargets.Add(rt);
+                }
             }
 
             if (_dummyQuadMesh == null)
@@ -230,6 +273,19 @@ namespace YusufOkuducu.PcPsoEliminator
             }
         }
 
+        private static GraphicsFormat MapProfileToGraphicsFormat(PsoRenderTargetProfile profile)
+        {
+            switch (profile)
+            {
+                case PsoRenderTargetProfile.HdrR16G16B16A16_SFloat:
+                    return GraphicsFormat.R16G16B16A16_SFloat;
+                case PsoRenderTargetProfile.HdrB10G11R11_UFloatPack32:
+                    return GraphicsFormat.B10G11R11_UFloatPack32;
+                default:
+                    return GraphicsFormat.R8G8B8A8_UNorm;
+            }
+        }
+
         private void ReleaseOffscreenResources()
         {
             if (_warmupCmd != null)
@@ -237,12 +293,17 @@ namespace YusufOkuducu.PcPsoEliminator
                 _warmupCmd.Dispose();
                 _warmupCmd = null;
             }
-            if (_dummyColorRt != null)
+            for (int i = 0; i < _dummyRenderTargets.Count; i++)
             {
-                _dummyColorRt.Release();
-                DestroyImmediate(_dummyColorRt);
-                _dummyColorRt = null;
+                RenderTexture rt = _dummyRenderTargets[i];
+                if (rt != null)
+                {
+                    rt.Release();
+                    DestroyImmediate(rt);
+                }
             }
+            _dummyRenderTargets.Clear();
+
             if (_dummyQuadMesh != null)
             {
                 DestroyImmediate(_dummyQuadMesh);

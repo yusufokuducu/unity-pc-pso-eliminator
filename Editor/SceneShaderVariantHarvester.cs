@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Text;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -12,7 +14,7 @@ namespace YusufOkuducu.PcPsoEliminator.Editor
     /// </summary>
     public static class SceneShaderVariantHarvester
     {
-        private static readonly PassType[]CandidatePassTypes =
+        private static readonly PassType[] CandidatePassTypes =
         {
             PassType.ScriptableRenderPipeline,
             PassType.ForwardBase,
@@ -22,19 +24,41 @@ namespace YusufOkuducu.PcPsoEliminator.Editor
             PassType.Meta
         };
 
+        /// <summary>
+        /// Batchmode / CI entrypoint:
+        /// unity -batchmode -quit -projectPath . -executeMethod YusufOkuducu.PcPsoEliminator.Editor.SceneShaderVariantHarvester.RunCiHarvest
+        /// </summary>
+        public static void RunCiHarvest()
+        {
+            PsoWarmupManifest manifest = HarvestProjectMaterialsToManifest();
+            string logDir = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
+            if (!Directory.Exists(logDir))
+                Directory.CreateDirectory(logDir);
+
+            string mdPath = Path.Combine(logDir, "PsoWarmupManifestReport.md");
+            File.WriteAllText(mdPath, manifest.ExportManifestReportToMarkdown(), Encoding.UTF8);
+
+            Debug.Log(
+                $"[PcPsoEliminator CI] Harvested {manifest.harvestedRecords.Count} PSO variants across " +
+                $"{manifest.uniqueShaderCount} shaders and {manifest.uniqueMaterialCount} materials. Report saved to {mdPath}");
+        }
+
         public static PsoWarmupManifest HarvestProjectMaterialsToManifest(
             string manifestAssetPath = "Assets/PsoWarmupManifest.asset",
             string svcAssetPath = "Assets/HarvestedShaderVariants.shadervariants")
         {
             string[] matGuids = AssetDatabase.FindAssets("t:Material");
-            var materials = new List<Material>(matGuids.Length);
+            var materials = new List<Material>(matGuids != null ? matGuids.Length : 0);
 
-            for (int i = 0; i < matGuids.Length; i++)
+            if (matGuids != null)
             {
-                string path = AssetDatabase.GUIDToAssetPath(matGuids[i]);
-                Material m = AssetDatabase.LoadAssetAtPath<Material>(path);
-                if (m != null && m.shader != null)
-                    materials.Add(m);
+                for (int i = 0; i < matGuids.Length; i++)
+                {
+                    string path = AssetDatabase.GUIDToAssetPath(matGuids[i]);
+                    Material m = AssetDatabase.LoadAssetAtPath<Material>(path);
+                    if (m != null && m.shader != null)
+                        materials.Add(m);
+                }
             }
 
             return BuildManifestFromMaterials(materials, manifestAssetPath, svcAssetPath);
@@ -45,7 +69,10 @@ namespace YusufOkuducu.PcPsoEliminator.Editor
             string manifestAssetPath,
             string svcAssetPath)
         {
-            var svc = AssetDatabase.LoadAssetAtPath<ShaderVariantCollection>(svcAssetPath);
+            var svc = !string.IsNullOrEmpty(svcAssetPath)
+                ? AssetDatabase.LoadAssetAtPath<ShaderVariantCollection>(svcAssetPath)
+                : null;
+
             if (svc == null)
             {
                 svc = new ShaderVariantCollection();
@@ -57,7 +84,10 @@ namespace YusufOkuducu.PcPsoEliminator.Editor
                 svc.Clear();
             }
 
-            var manifest = AssetDatabase.LoadAssetAtPath<PsoWarmupManifest>(manifestAssetPath);
+            var manifest = !string.IsNullOrEmpty(manifestAssetPath)
+                ? AssetDatabase.LoadAssetAtPath<PsoWarmupManifest>(manifestAssetPath)
+                : null;
+
             if (manifest == null)
             {
                 manifest = ScriptableObject.CreateInstance<PsoWarmupManifest>();
@@ -72,48 +102,55 @@ namespace YusufOkuducu.PcPsoEliminator.Editor
             var uniqueShaders = new HashSet<Shader>();
             var seenVariantKeys = new HashSet<string>(StringComparer.Ordinal);
 
-            for (int i = 0; i < materials.Count; i++)
+            if (materials != null)
             {
-                Material mat = materials[i];
-                if (mat == null || mat.shader == null || !mat.shader.isSupported)
-                    continue;
-
-                if (mat.shader.name.StartsWith("Hidden/", StringComparison.Ordinal))
-                    continue;
-
-                uniqueShaders.Add(mat.shader);
-                manifest.hardwareDrawWarmupMaterials.Add(mat);
-
-                string[] keywords = mat.shaderKeywords ?? Array.Empty<string>();
-                Array.Sort(keywords, StringComparer.Ordinal);
-                string joinedKw = string.Join(";", keywords);
-
-                for (int p = 0; p < CandidatePassTypes.Length; p++)
+                for (int i = 0; i < materials.Count; i++)
                 {
-                    PassType pt = CandidatePassTypes[p];
-                    string dedupKey = $"{mat.shader.name}|{pt}|{joinedKw}";
-                    if (!seenVariantKeys.Add(dedupKey))
+                    Material mat = materials[i];
+                    if (mat == null || mat.shader == null || !mat.shader.isSupported)
                         continue;
 
-                    try
+                    if (mat.shader.name.StartsWith("Hidden/", StringComparison.Ordinal))
+                        continue;
+
+                    uniqueShaders.Add(mat.shader);
+                    manifest.hardwareDrawWarmupMaterials.Add(mat);
+
+                    string[] rawKeywords = mat.shaderKeywords ?? Array.Empty<string>();
+                    var keywordsCopy = new string[rawKeywords.Length];
+                    Array.Copy(rawKeywords, keywordsCopy, rawKeywords.Length);
+                    Array.Sort(keywordsCopy, StringComparer.Ordinal);
+
+                    for (int p = 0; p < CandidatePassTypes.Length; p++)
                     {
-                        var variant = new ShaderVariantCollection.ShaderVariant(mat.shader, pt, keywords);
-                        svc.Add(variant);
-                        manifest.harvestedRecords.Add(new HarvestedVariantRecord
+                        PassType pt = CandidatePassTypes[p];
+                        var record = new HarvestedVariantRecord
                         {
                             shaderName = mat.shader.name,
                             passType = pt,
-                            keywords = keywords,
+                            keywords = keywordsCopy,
                             sourceAssetPath = AssetDatabase.GetAssetPath(mat)
-                        });
-                    }
-                    catch (ArgumentException)
-                    {
-                        // PassType + keyword combination does not exist in this shader; safely skip
+                        };
+
+                        string dedupKey = record.GetCanonicalKey();
+                        if (!seenVariantKeys.Add(dedupKey))
+                            continue;
+
+                        try
+                        {
+                            var variant = new ShaderVariantCollection.ShaderVariant(mat.shader, pt, keywordsCopy);
+                            svc.Add(variant);
+                            manifest.harvestedRecords.Add(record);
+                        }
+                        catch (ArgumentException)
+                        {
+                            // PassType + keyword combination does not exist in this shader; safely skip
+                        }
                     }
                 }
             }
 
+            manifest.DeduplicateAndSortRecords();
             manifest.uniqueShaderCount = uniqueShaders.Count;
             manifest.uniqueMaterialCount = manifest.hardwareDrawWarmupMaterials.Count;
             manifest.lastHarvestTimestampUtc = DateTime.UtcNow.ToString("O");
